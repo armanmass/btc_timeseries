@@ -10,6 +10,16 @@ dependencies = [
     "ccxt>=4.4.82",
     "mplfinance>=0.12.10b0",
     "matplotlib>=3.10.3",
+    "plotly>=6.1.0",
+    "dash>=3.0.4",
+    "kaleido>=0.2.1",
+    "numpy>=2.2.5",
+    "scikit-learn>=1.6.1",
+    "ta>=0.11.0",
+    "torch>=2.7.0",
+    "wandb>=0.19.11",
+    "pytorch-lightning>=2.5.1",
+    "optuna>=4.3.0",
 ]
 requires-python = ">=3.9"
 readme = "README.md"
@@ -27,6 +37,16 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.hatch.build]
+include = [
+    "btc_dashboard.py",
+    "btcproject.py",
+    "README.md",
+]
 
 [tool.black]
 line-length = 88
