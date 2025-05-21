@@ -1,1 +1,0 @@
-{"sequence_length":168,"prediction_horizons":[24,168,720],"feature_columns":[],"target_columns":[],"train_split":0.7,"val_split":0.15,"test_split":0.15,"random_state":42}

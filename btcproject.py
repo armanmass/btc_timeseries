@@ -5,26 +5,41 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Download data
-exchange = ccxt.kraken({
+exchange = ccxt.binance({
     "enableRateLimit": True,
 })
 symbol = "BTC/USD"
 timeframe = "1h"
-since = exchange.parse8601("2020-05-16T00:00:00Z")
+start_date = "2020-05-16T00:00:00Z"
+end_date = "2024-03-16T00:00:00Z"
+since = exchange.parse8601(start_date)
+end_timestamp = exchange.parse8601(end_date)
 all_ohlcv = []
 
-while since < exchange.milliseconds():
-    batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=500)
-    if not batch: break
-    all_ohlcv += batch
-    since = batch[-1][0] + 1
+print(f"Downloading BTC/USD data from {start_date} to {end_date}")
+while since < end_timestamp:
+    try:
+        batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
+        if not batch: 
+            print("No more data available")
+            break
+        all_ohlcv += batch
+        since = batch[-1][0] + 1
+        print(f"Downloaded data until {pd.to_datetime(since, unit='ms')}")
+    except Exception as e:
+        print(f"Error downloading data: {str(e)}")
+        break
+
+if not all_ohlcv:
+    raise ValueError("No data was downloaded")
 
 df = pd.DataFrame(all_ohlcv, columns=[
     "time","open","high","low","close","volume"
 ])
 df["time"] = pd.to_datetime(df["time"], unit="ms")
 df.set_index("time", inplace=True)
-df.to_csv("btc_usd_5y_hourly_kraken.csv")
+df.to_csv("btc_usd_5y_hourly_binance.csv")
+print(f"Downloaded {len(df)} data points from {df.index[0]} to {df.index[-1]}")
 
 #%%
 # Calculate technical indicators
