@@ -7,6 +7,7 @@ import ta
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,61 +42,59 @@ def load_and_preprocess_data(
     config: PreprocessingConfig
 ) -> Tuple[BTCData, BTCData, BTCData]:
     """
-    Load and preprocess BTC data from CSV file.
-    
-    Args:
-        file_path: Path to the CSV file containing BTC data
-        config: Preprocessing configuration
-        
-    Returns:
-        Tuple of (train_data, val_data, test_data) as BTCData objects
+    Load and preprocess BTC data from CSV file, with Parquet caching.
     """
     try:
-        # Read data in chunks to handle large file
-        logger.info(f"Loading data from {file_path}")
-        chunks = pd.read_csv(
-            file_path,
-            chunksize=100000  # Adjust based on available memory
-        )
-        
-        # Process first chunk to get column names
-        first_chunk = next(chunks)
-        # Lowercase all column names to handle capitalization issues
-        first_chunk.columns = [col.lower() for col in first_chunk.columns]
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        if not all(col in first_chunk.columns for col in required_columns):
-            raise ValueError(f"CSV must contain columns: {required_columns}")
-        
-        # Combine all chunks, ensuring all columns are lowercase
-        df = pd.concat([
-            first_chunk
-        ] + [chunk.rename(columns={col: col.lower() for col in chunk.columns}) for chunk in chunks])
-        logger.info(f"Loaded {len(df)} rows of data")
-
-        # Convert Timestamp to datetime and set as index
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-        df = df.set_index('timestamp')
-
+        # Determine cache path (global for every file in data folder)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        cache_path = os.path.join(os.path.dirname(file_path), base_name + '.parquet')
+        use_cache = False
+        if os.path.exists(cache_path):
+            csv_mtime = os.path.getmtime(file_path)
+            parquet_mtime = os.path.getmtime(cache_path)
+            if parquet_mtime > csv_mtime:
+                use_cache = True
+        if use_cache:
+            logger.info(f"Loading data from cache: {cache_path}")
+            df = pd.read_parquet(cache_path)
+        else:
+            # Read data in chunks to handle large file
+            logger.info(f"Loading data from {file_path}")
+            chunks = pd.read_csv(
+                file_path,
+                chunksize=100000  # Adjust based on available memory
+            )
+            # Process first chunk to get column names
+            first_chunk = next(chunks)
+            # Lowercase all column names to handle capitalization issues
+            first_chunk.columns = [col.lower() for col in first_chunk.columns]
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in first_chunk.columns for col in required_columns):
+                raise ValueError(f"CSV must contain columns: {required_columns}")
+            # Combine all chunks, ensuring all columns are lowercase
+            df = pd.concat([
+                first_chunk
+            ] + [chunk.rename(columns={col: col.lower() for col in chunk.columns}) for chunk in chunks])
+            logger.info(f"Loaded {len(df)} rows of data")
+            # Convert Timestamp to datetime and set as index
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df = df.set_index('timestamp')
+            # Save to Parquet cache
+            df.to_parquet(cache_path)
+            logger.info(f"Cached data to {cache_path}")
         # Sort by timestamp
         df = df.sort_index()
-        
         # Handle missing values
         df = handle_missing_values(df)
-        
         # Add technical indicators
         df = add_technical_indicators(df)
-        
         # Create time features
         df = add_time_features(df)
-        
         # Create target variables for different horizons
         df = create_target_variables(df, config.prediction_horizons)
-        
         # Split data
         train_data, val_data, test_data = split_data(df, config)
-        
         return train_data, val_data, test_data
-        
     except Exception as e:
         logger.error(f"Error preprocessing data: {str(e)}")
         raise
