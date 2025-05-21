@@ -40,61 +40,87 @@ class BTCData(BaseModel):
 def load_and_preprocess_data(
     file_path: str,
     config: PreprocessingConfig
-) -> Tuple[BTCData, BTCData, BTCData]:
+) -> Tuple[pd.DataFrame, BTCData, BTCData, BTCData]:
     """
     Load and preprocess BTC data from CSV file, with Parquet caching.
+    Returns the full preprocessed DataFrame and the split train/val/test sets.
     """
     try:
-        # Determine cache path (global for every file in data folder)
+        # Determine cache path for the initial DataFrame (global for every file in data folder)
         base_name = os.path.splitext(os.path.basename(file_path))[0]
-        cache_path = os.path.join(os.path.dirname(file_path), base_name + '.parquet')
-        use_cache = False
-        if os.path.exists(cache_path):
+        initial_cache_path = os.path.join(os.path.dirname(file_path), base_name + '_initial.parquet')
+        full_processed_cache_path = os.path.join(os.path.dirname(file_path), base_name + '_full_processed.parquet')
+        
+        df = None # Initialize df
+
+        # Try loading from full processed cache first
+        if os.path.exists(full_processed_cache_path):
             csv_mtime = os.path.getmtime(file_path)
-            parquet_mtime = os.path.getmtime(cache_path)
+            parquet_mtime = os.path.getmtime(full_processed_cache_path)
             if parquet_mtime > csv_mtime:
-                use_cache = True
-        if use_cache:
-            logger.info(f"Loading data from cache: {cache_path}")
-            df = pd.read_parquet(cache_path)
-        else:
-            # Read data in chunks to handle large file
-            logger.info(f"Loading data from {file_path}")
-            chunks = pd.read_csv(
-                file_path,
-                chunksize=100000  # Adjust based on available memory
-            )
-            # Process first chunk to get column names
-            first_chunk = next(chunks)
-            # Lowercase all column names to handle capitalization issues
-            first_chunk.columns = [col.lower() for col in first_chunk.columns]
-            required_columns = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in first_chunk.columns for col in required_columns):
-                raise ValueError(f"CSV must contain columns: {required_columns}")
-            # Combine all chunks, ensuring all columns are lowercase
-            df = pd.concat([
-                first_chunk
-            ] + [chunk.rename(columns={col: col.lower() for col in chunk.columns}) for chunk in chunks])
-            logger.info(f"Loaded {len(df)} rows of data")
-            # Convert Timestamp to datetime and set as index
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            df = df.set_index('timestamp')
-            # Save to Parquet cache
-            df.to_parquet(cache_path)
-            logger.info(f"Cached data to {cache_path}")
-        # Sort by timestamp
-        df = df.sort_index()
-        # Handle missing values
-        df = handle_missing_values(df)
-        # Add technical indicators
-        df = add_technical_indicators(df)
-        # Create time features
-        df = add_time_features(df)
-        # Create target variables for different horizons
-        df = create_target_variables(df, config.prediction_horizons)
+                logger.info(f"Loading full processed data from cache: {full_processed_cache_path}")
+                df = pd.read_parquet(full_processed_cache_path)
+
+        if df is None: # If not loaded from full processed cache
+             # Try loading initial DataFrame from cache
+            if os.path.exists(initial_cache_path):
+                csv_mtime = os.path.getmtime(file_path)
+                parquet_mtime = os.path.getmtime(initial_cache_path)
+                if parquet_mtime > csv_mtime:
+                    logger.info(f"Loading initial data from cache: {initial_cache_path}")
+                    df = pd.read_parquet(initial_cache_path)
+            
+            if df is None: # If not loaded from any cache
+                # Read data in chunks to handle large file
+                logger.info(f"Loading data from {file_path}")
+                chunks = pd.read_csv(
+                    file_path,
+                    chunksize=100000  # Adjust based on available memory
+                )
+                # Process first chunk to get column names
+                first_chunk = next(chunks)
+                # Lowercase all column names to handle capitalization issues
+                first_chunk.columns = [col.lower() for col in first_chunk.columns]
+                required_columns = ['open', 'high', 'low', 'close', 'volume']
+                if not all(col in first_chunk.columns for col in required_columns):
+                    raise ValueError(f"CSV must contain columns: {required_columns}")
+                # Combine all chunks, ensuring all columns are lowercase
+                df = pd.concat([
+                    first_chunk
+                ] + [chunk.rename(columns={col: col.lower() for col in chunk.columns}) for chunk in chunks])
+                logger.info(f"Loaded {len(df)} rows of data")
+                # Convert Timestamp to datetime and set as index
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                df = df.set_index('timestamp')
+                # Save the initial processed DataFrame to cache
+                df.to_parquet(initial_cache_path)
+                logger.info(f"Cached initial data to {initial_cache_path}")
+        
+        # If df was loaded from initial cache or just processed, continue with feature engineering
+        if full_processed_cache_path is not None and not os.path.exists(full_processed_cache_path): # Only proceed if full processed cache didn't exist
+
+            logger.info("Proceeding with feature engineering...")
+            # Sort by timestamp
+            df = df.sort_index()
+            # Handle missing values
+            df = handle_missing_values(df)
+            # Add technical indicators
+            df = add_technical_indicators(df)
+            # Create time features
+            df = add_time_features(df)
+            # Create target variables for different horizons
+            df = create_target_variables(df, config.prediction_horizons)
+
+            # Save the full processed DataFrame to cache
+            df.to_parquet(full_processed_cache_path)
+            logger.info(f"Cached full processed data to {full_processed_cache_path}")
+
+
         # Split data
         train_data, val_data, test_data = split_data(df, config)
-        return train_data, val_data, test_data
+        
+        return df, train_data, val_data, test_data # Return full df as well
+        
     except Exception as e:
         logger.error(f"Error preprocessing data: {str(e)}")
         raise

@@ -32,7 +32,7 @@ def main():
         
         # Load and preprocess data
         logger.info("Starting data preprocessing...")
-        train_data, val_data, test_data = load_and_preprocess_data(
+        full_df, train_data, val_data, test_data = load_and_preprocess_data(
             str(data_file),
             config
         )
