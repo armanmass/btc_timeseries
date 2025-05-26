@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 import os
+import torch
+from torch.utils.data import Dataset # Import PyTorch Dataset
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +38,64 @@ class BTCData(BaseModel):
     model_config = {
         "arbitrary_types_allowed": True
     }
+
+class BTCDataset(Dataset):
+    """Custom Dataset for BTC time series data."""
+    def __init__(self, features: np.ndarray, targets: np.ndarray, input_window: int, prediction_horizons: List[int]):
+        # Store the full feature and target arrays
+        self.features = features
+        self.targets = targets
+        self.input_window = input_window
+        self.prediction_horizons = prediction_horizons
+        self.num_target_types = targets.shape[1] // len(prediction_horizons)
+
+        # Calculate the number of possible sequences
+        # A sequence ends at index i + input_window - 1
+        # The furthest target is at index i + input_window + max(horizons) - 1
+        # So the last valid starting index `i` is when i + input_window + max(horizons) - 1 < len(features)
+        # i < len(features) - input_window - max(horizons) + 1
+        # The number of sequences is this value
+        self._num_sequences = len(features) - self.input_window - max(self.prediction_horizons) + 1
+        
+        # Ensure we don't have negative number of sequences if data is too short
+        if self._num_sequences < 0:
+            self._num_sequences = 0
+            logger.warning("Data is too short to create any sequences with the given window and horizons.")
+
+    def __len__(self):
+        return self._num_sequences
+
+    def __getitem__(self, idx):
+        # For a given sequence index `idx`,
+        # the input window is from `idx` to `idx + input_window`
+        input_seq = self.features[idx:(idx + self.input_window)]
+        
+        # The targets are for the steps AFTER the input window ends
+        # For horizon H, the target is at index (idx + input_window + H - 1)
+        current_targets = []
+        for horizon in self.prediction_horizons:
+             target_idx = idx + self.input_window + horizon - 1
+             # This index should always be valid based on how _num_sequences is calculated
+             
+             # Add targets for this horizon (e.g., price, return, volatility)
+             start_col = self.prediction_horizons.index(horizon) * self.num_target_types
+             end_col = start_col + self.num_target_types
+             current_targets.extend(self.targets[target_idx, start_col:end_col])
+        
+        # Convert to torch tensors
+        input_seq_tensor = torch.FloatTensor(input_seq)
+        targets_tensor = torch.FloatTensor(current_targets)
+
+        # Add validation to check for NaN/Inf in tensors
+        if not torch.isfinite(input_seq_tensor).all():
+            logger.error(f"NaN or Inf found in input sequence at index {idx}")
+            # Depending on severity, you might want to raise an error or handle it differently
+            # For now, we'll print an error and continue, but this needs investigation if it occurs
+        if not torch.isfinite(targets_tensor).all():
+            logger.error(f"NaN or Inf found in target tensor at index {idx}")
+            # Same as above, investigate if this occurs
+
+        return input_seq_tensor, targets_tensor
 
 def load_and_preprocess_data(
     file_path: str,
@@ -193,27 +253,18 @@ def create_target_variables(
 ) -> pd.DataFrame:
     """Create target variables for different prediction horizons"""
     for horizon in horizons:
-        # Future price
+        # Only create future price target for each horizon
         df[f'price_{horizon}h'] = df['close'].shift(-horizon)
-        
-        # Future returns
-        df[f'return_{horizon}h'] = (
-            df[f'price_{horizon}h'] / df['close'] - 1
-        )
-        
-        # Future volatility (using high-low range)
-        df[f'volatility_{horizon}h'] = (
-            df['high'].rolling(horizon).max() / 
-            df['low'].rolling(horizon).min() - 1
-        ).shift(-horizon)
     
     return df
 
 def split_data(
     df: pd.DataFrame,
     config: PreprocessingConfig
-) -> Tuple[BTCData, BTCData, BTCData]:
-    """Split data into train, validation, and test sets"""
+) -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset, torch.utils.data.Dataset]:
+    """
+    Split data into train, validation, and test sets and create PyTorch Datasets.
+    """
     # Calculate split indices
     n = len(df)
     train_end = int(n * config.train_split)
@@ -228,42 +279,62 @@ def split_data(
     feature_cols = [col for col in df.columns if not any(
         col.startswith(prefix) for prefix in ['price_', 'return_', 'volatility_']
     )]
-    target_cols = [col for col in df.columns if any(
-        col.startswith(prefix) for prefix in ['price_', 'return_', 'volatility_']
-    )]
+    # Ensure target columns are in a consistent order across splits
+    # Extract all unique target prefixes and sort them
+    target_prefixes = sorted(list(set(
+        col.split('_')[0] for col in df.columns if col.startswith('price_')
+    )))
     
-    # Scale features
+    target_cols = []
+    # Add target columns for each horizon in the specified order of prefixes and horizons
+    for horizon in config.prediction_horizons:
+        for prefix in target_prefixes:
+             col_name = f'{prefix}_{horizon}h'
+             if col_name in df.columns: # Check if column exists (e.g., if data was too short for a horizon)
+                 target_cols.append(col_name)
+
+    # Drop rows where target values are NaN (happens at the end due to shifting)
+    df_cleaned = df.dropna(subset=target_cols).copy()
+
+    # Re-split data after dropping NaNs
+    train_df_cleaned = df_cleaned.iloc[:train_end]
+    val_df_cleaned = df_cleaned.iloc[train_end:val_end]
+    test_df_cleaned = df_cleaned.iloc[val_end:]
+
+    # Scale features using scaler fitted ONLY on the training data (cleaned)
     scaler = StandardScaler()
-    train_features = scaler.fit_transform(train_df[feature_cols])
-    val_features = scaler.transform(val_df[feature_cols])
-    test_features = scaler.transform(test_df[feature_cols])
+    train_features_scaled = scaler.fit_transform(train_df_cleaned[feature_cols])
+    val_features_scaled = scaler.transform(val_df_cleaned[feature_cols])
+    test_features_scaled = scaler.transform(test_df_cleaned[feature_cols])
     
-    # Create BTCData objects
-    train_data = BTCData(
-        features=train_features,
-        targets=train_df[target_cols].values,
-        feature_names=feature_cols,
-        target_names=target_cols,
-        scaler=scaler,
-        timestamps=train_df.index.values
-    )
+    # Scale targets as well
+    # It's generally better to scale features and targets independently or use a multi-output scaler
+    # For simplicity here, let's scale targets using the same StandardScaler, but be mindful
+    # A dedicated target scaler (like MinMaxScaler) might be more appropriate depending on the target distribution.
+    # Let's use a separate scaler for targets for better practice.
+    target_scaler = StandardScaler()
+    train_targets_scaled = target_scaler.fit_transform(train_df_cleaned[target_cols])
+    val_targets_scaled = target_scaler.transform(val_df_cleaned[target_cols])
+    test_targets_scaled = target_scaler.transform(test_df_cleaned[target_cols])
+
+    # Create sequences
+    # Now, the sequences are created within the Dataset __getitem__ method on the fly.
+
+    # Create PyTorch Datasets
+    train_dataset = BTCDataset(train_features_scaled, train_targets_scaled, config.input_window, config.prediction_horizons)
+    val_dataset = BTCDataset(val_features_scaled, val_targets_scaled, config.input_window, config.prediction_horizons)
+    test_dataset = BTCDataset(test_features_scaled, test_targets_scaled, config.input_window, config.prediction_horizons)
+
+    logger.info(f"Train sequences shape: {len(train_dataset)} sequences")
+    logger.info(f"Validation sequences shape: {len(val_dataset)} sequences")
+    logger.info(f"Test sequences shape: {len(test_dataset)} sequences")
+
+    # Create PyTorch Datasets
+    # train_dataset = BTCDataset(train_X, train_y)
+    # val_dataset = BTCDataset(val_X, val_y)
+    # test_dataset = BTCDataset(test_X, test_y)
     
-    val_data = BTCData(
-        features=val_features,
-        targets=val_df[target_cols].values,
-        feature_names=feature_cols,
-        target_names=target_cols,
-        scaler=scaler,
-        timestamps=val_df.index.values
-    )
+    # Note: We are not returning the scaler here, but you might need it for inference
+    # to inverse transform predictions. Consider returning it if needed.
     
-    test_data = BTCData(
-        features=test_features,
-        targets=test_df[target_cols].values,
-        feature_names=feature_cols,
-        target_names=target_cols,
-        scaler=scaler,
-        timestamps=test_df.index.values
-    )
-    
-    return train_data, val_data, test_data 
+    return train_dataset, val_dataset, test_dataset 
