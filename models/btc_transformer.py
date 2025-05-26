@@ -134,20 +134,20 @@ class BTCTransformer(nn.Module):
         return final_predictions
 
 # Example Usage (for testing the structure)
-# num_features = 23 # Based on your preprocessing output
-# input_window = 168 # From config
-# prediction_horizons = [24, 168, 720] # From config
-# 
-# model = BTCTransformer(
-#     num_features=num_features,
-#     input_window=input_window,
-#     prediction_horizons=prediction_horizons
-# )
-# 
-# # Create a dummy input tensor (batch_size, input_window, num_features)
-# dummy_input = torch.randn(32, input_window, num_features)
-# 
-# # Get predictions
-# output = model(dummy_input)
-# 
-# print("Model output shape:", output.shape) # Expected: (32, len(prediction_horizons)) -> (32, 3) 
+num_features = 23 # Based on your preprocessing output
+input_window = 168 # From config
+prediction_horizons = [24, 168, 720] # From config
+
+model = BTCTransformer(
+    num_features=num_features,
+    input_window=input_window,
+    prediction_horizons=prediction_horizons
+)
+
+# Create a dummy input tensor (batch_size, input_window, num_features)
+dummy_input = torch.randn(32, input_window, num_features)
+
+# Get predictions
+output = model(dummy_input)
+
+print("Model output shape:", output.shape) # Expected: (32, len(prediction_horizons)) -> (32, 3) 

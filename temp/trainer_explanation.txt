@@ -1,0 +1,254 @@
+Explanation of training/trainer.py:
+
+---
+Line 1: `import torch`
+Imports the main PyTorch library.
+---
+Line 2: `import torch.nn as nn`
+Imports the neural networks module from PyTorch, commonly aliased as `nn`.
+---
+Line 3: `import torch.optim as optim`
+Imports the optimization module from PyTorch, commonly aliased as `optim`.
+---
+Line 4: `from torch.cuda.amp import GradScaler, autocast`
+Imports `GradScaler` and `autocast` from PyTorch's Automatic Mixed Precision (AMP) utility, specifically for CUDA (GPU) usage.
+---
+Line 6-8: `# Assuming data loader and model classes will be imported`
+`# from data.btc_preprocessor import BTCDataLoader`
+`# from models.btc_transformer import BTCTransformer`
+These are commented-out lines indicating that data loader and model classes from other files will be imported here in the future.
+---
+Line 10: `class Trainer:`
+Defines a Python class named `Trainer`.
+---
+Line 11-26: `    def __init__(`
+`        self, `
+`        model: nn.Module, `
+`        train_loader, # Placeholder for DataLoader`
+`        val_loader,   # Placeholder for DataLoader`
+`        optimizer: optim.Optimizer,`
+`        criterion: nn.Module, # Loss function`
+`        device: torch.device,`
+`        epochs: int,`
+`        gradient_accumulation_steps: int = 1,`
+`        use_amp: bool = True # Use Automatic Mixed Precision`
+`    ):`
+This is the constructor method (`__init__`) for the `Trainer` class. It takes various parameters necessary for training:
+- `model`: The neural network model to be trained.
+- `train_loader`: An object (like a PyTorch DataLoader) that provides training data in batches.
+- `val_loader`: An object that provides validation data in batches.
+- `optimizer`: The optimization algorithm (e.g., Adam, SGD) used to update model weights.
+- `criterion`: The loss function used to measure the difference between model outputs and targets.
+- `device`: The device (CPU or GPU) where the model and data will be processed.
+- `epochs`: The total number of training epochs.
+- `gradient_accumulation_steps`: An integer specifying how many batches to process before performing an optimizer step (for accumulating gradients).
+- `use_amp`: A boolean indicating whether to use Automatic Mixed Precision.
+---
+Line 27-35: `        self.model = model`
+`        self.train_loader = train_loader`
+`        self.val_loader = val_loader`
+`        self.optimizer = optimizer`
+`        self.criterion = criterion`
+`        self.device = device`
+`        self.epochs = epochs`
+`        self.gradient_accumulation_steps = gradient_accumulation_steps`
+`        self.use_amp = use_amp`
+`        
+        # Initialize GradScaler for AMP`
+`        self.scaler = GradScaler('cuda') if use_amp else None`
+These lines assign the input parameters to instance variables (`self.attribute_name`), making them accessible throughout the class. It also initializes `self.scaler`, an instance of `GradScaler` used for scaling gradients in AMP training, only if `use_amp` is True and specifies 'cuda' as the device.
+---
+Line 37: `    def train_one_epoch(self, epoch: int):`
+Defines a method named `train_one_epoch` that handles the training process for a single epoch. It takes the current epoch number as input.
+---
+Line 38: `        self.model.train()`
+Sets the model to training mode. This enables features like dropout and batch normalization that behave differently during training and evaluation.
+---
+Line 39: `        running_loss = 0.0`
+Initializes a variable `running_loss` to 0.0 to accumulate the loss over the epoch.
+---
+Line 41: `        # Reset gradients every accumulation steps`
+This is a comment explaining the purpose of the next line.
+---
+Line 42: `        self.optimizer.zero_grad()`
+Resets the gradients of the model's parameters. This is done at the beginning of each effective batch (after gradient accumulation).
+---
+Line 44: `        for i, (inputs, targets) in enumerate(self.train_loader):`
+Starts a loop to iterate over batches provided by the `train_loader`. `i` is the batch index, `inputs` are the input features, and `targets` are the target values.
+---
+Line 45: `            inputs, targets = inputs.to(self.device), targets.to(self.device)`
+Moves the input features and target values to the specified device (CPU or GPU).
+---
+Line 47: `            # Use autocast for mixed precision if enabled`
+This is a comment explaining the purpose of the next line.
+---
+Line 48: `            with autocast('cuda', enabled=self.use_amp):`
+Enters an `autocast` context manager. When `enabled=True` (i.e., `use_amp` is True), operations within this block will use mixed precision (usually float16 for operations that support it and float32 otherwise) on the 'cuda' device to potentially speed up training and reduce memory usage.
+---
+Line 49: `                outputs = self.model(inputs)`
+Performs the forward pass: the input features (`inputs`) are passed through the model to get predictions (`outputs`).
+---
+Line 50: `                loss = self.criterion(outputs, targets)`
+Calculates the loss between the model's outputs and the true targets using the specified criterion (loss function).
+---
+Line 51: `                loss = loss / self.gradient_accumulation_steps # Scale loss for accumulation`
+Scales the loss by the number of gradient accumulation steps. This is necessary because the gradients for this batch will be accumulated over multiple steps before an optimizer update.
+---
+Line 53: `            # Backward pass and optimization step with scaler for AMP`
+This is a comment explaining the purpose of the next lines.
+---
+Line 54: `            if self.use_amp:`
+Checks if AMP is enabled.
+---
+Line 55: `                self.scaler.scale(loss).backward()`
+If AMP is enabled, it scales the loss using `self.scaler` before calling `backward()`. This helps prevent numerical underflow with small gradients in float16.
+---
+Line 56: `            else:`
+If AMP is not enabled.
+---
+Line 57: `                loss.backward()`
+Performs the standard backward pass to compute gradients of the loss with respect to model parameters.
+---
+Line 59: `            # Perform optimization step and scaler update every accumulation steps`
+This is a comment explaining the purpose of the next lines.
+---
+Line 60: `            if (i + 1) % self.gradient_accumulation_steps == 0:`
+Checks if the current batch is the last one in a group of `gradient_accumulation_steps` batches.
+---
+Line 61: `                if self.use_amp:`
+If AMP is enabled.
+---
+Line 62: `                    self.scaler.step(self.optimizer)`
+If using AMP, this call unscales the gradients and calls `optimizer.step()` to update model parameters. The `scaler` handles skipping the update if gradients are found to be NaN or Inf.
+---
+Line 63: `                    self.scaler.update()`
+Updates the scale factor used by `GradScaler` for the next iteration.
+---
+Line 64: `                else:`
+If AMP is not enabled.
+---
+Line 65: `                    self.optimizer.step()`
+Performs a standard optimizer step to update model parameters based on the accumulated gradients.
+---
+Line 66: `                self.optimizer.zero_grad()`
+Resets the gradients after an optimizer step.
+---
+Line 68: `            running_loss += loss.item() * self.gradient_accumulation_steps # Unscale loss for reporting`
+Adds the loss for the current batch to `running_loss`. The loss is unscaled back to its original value for accurate reporting.
+---
+Line 70: `        # Handle remaining gradients if dataset size is not a multiple of accumulation steps`
+This is a comment explaining the purpose of the next lines.
+---
+Line 71: `        if len(self.train_loader) % self.gradient_accumulation_steps != 0:`
+Checks if there are any remaining gradients from batches that didn't form a full `gradient_accumulation_steps` group at the end of the epoch.
+---
+Line 72-77: `             if self.use_amp:`
+`                self.scaler.step(self.optimizer)`
+`                self.scaler.update()`
+`             else:`
+`                self.optimizer.step()`
+`             self.optimizer.zero_grad()`
+If there are remaining gradients, an additional optimization step and gradient reset are performed to use these gradients.
+---
+Line 79: `        print(f"Epoch {epoch+1}, Train Loss: {running_loss / len(self.train_loader)}")`
+Prints the average training loss for the current epoch.
+---
+Line 81: `    def validate_one_epoch(self, epoch: int):`
+Defines a method named `validate_one_epoch` that handles the validation process for a single epoch. It takes the current epoch number as input.
+---
+Line 82: `        self.model.eval()`
+Sets the model to evaluation mode. This disables features like dropout and ensures batch normalization uses running statistics.
+---
+Line 83: `        running_loss = 0.0`
+Initializes a variable `running_loss` to 0.0 to accumulate the loss over the validation epoch.
+---
+Line 84: `        with torch.no_grad():`
+Enters a `torch.no_grad()` context manager. This disables gradient calculation, which is not needed during validation and saves memory and computation.
+---
+Line 85: `            for inputs, targets in self.val_loader:`
+Starts a loop to iterate over batches provided by the `val_loader`.
+---
+Line 86: `                inputs, targets = inputs.to(self.device), targets.to(self.device)`
+Moves the input features and target values to the specified device.
+---
+Line 88: `                with autocast('cuda', enabled=self.use_amp):`
+Enters an `autocast` context manager for potential mixed precision during validation (forward pass only).
+---
+Line 89: `                     outputs = self.model(inputs)`
+Performs the forward pass to get model predictions.
+---
+Line 90: `                     loss = self.criterion(outputs, targets)`
+Calculates the loss.
+---
+Line 92: `                running_loss += loss.item()`
+Adds the loss for the current batch to `running_loss`.
+---
+Line 94: `        print(f"Epoch {epoch+1}, Validation Loss: {running_loss / len(self.val_loader)}")`
+Prints the average validation loss for the current epoch.
+---
+Line 95: `        return running_loss / len(self.val_loader)`
+Returns the average validation loss for the epoch.
+---
+Line 97: `    def train(self):`
+Defines the main `train` method that orchestrates the entire training process over multiple epochs.
+---
+Line 98: `        best_val_loss = float('inf')`
+Initializes `best_val_loss` to infinity to keep track of the lowest validation loss achieved so far.
+---
+Line 100: `        for epoch in range(self.epochs):`
+Starts a loop to iterate through the specified number of training epochs.
+---
+Line 101: `            self.train_one_epoch(epoch)`
+Calls the `train_one_epoch` method to train the model for the current epoch.
+---
+Line 102: `            val_loss = self.validate_one_epoch(epoch)`
+Calls the `validate_one_epoch` method to evaluate the model on the validation set after the training epoch and stores the returned validation loss.
+---
+Line 104: `            # Basic checkpointing (can be expanded)`
+This is a comment indicating a placeholder for checkpointing logic.
+---
+Line 105: `            if val_loss < best_val_loss:`
+Checks if the current validation loss is better than the best validation loss recorded so far.
+---
+Line 106: `                best_val_loss = val_loss`
+If the current validation loss is better, updates `best_val_loss`.
+---
+Line 107: `                print(f"Validation loss improved. Saving model.")`
+Prints a message indicating that the validation loss improved.
+---
+Line 108: `                # torch.save(self.model.state_dict(), 'best_model.pth') # Uncomment to save`
+This is a commented-out line showing how to save the model's state dictionary (weights and biases) when an improvement is observed.
+---
+Line 110: `            # Basic early stopping (can be expanded)`
+This is a comment indicating a placeholder for early stopping logic.
+---
+Line 111: `            # if early_stopping_condition_met: break `
+This is a commented-out line showing where a condition for early stopping would typically break the training loop.
+---
+Line 113: `        print("Training finished.")`
+Prints a message indicating that the training process has completed after all epochs.
+---
+Line 115-136: `# Example usage (requires data loader and model instances)`
+`# if __name__ == "__main__":`
+`#     # Assuming you have model, data_loaders, optimizer, criterion, and device defined`
+`#     # model = BTCTransformer(...).to(device)`
+`#     # train_loader = BTCDataLoader(...).get_train_loader()`
+`#     # val_loader = BTCDataLoader(...).get_val_loader()`
+`#     # optimizer = optim.Adam(model.parameters(), lr=1e-4)`
+`#     # criterion = nn.MSELoss()`
+`#     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`
+`#     
+`#     # trainer = Trainer(`
+`#     #     model=model,`
+`#     #     train_loader=train_loader,`
+`#     #     val_loader=val_loader,`
+`#     #     optimizer=optimizer,`
+`#     #     criterion=criterion,`
+`#     #     device=device,`
+`#     #     epochs=10,`
+`#     #     gradient_accumulation_steps=4, # Example`
+`#     #     use_amp=True`
+`#     # )`
+`#     
+`#     # trainer.train() `
+These lines contain commented-out example code demonstrating how to instantiate and use the `Trainer` class. They show placeholders for creating the model, data loaders, optimizer, criterion, and device, and then creating a `Trainer` instance and calling its `train` method. 
